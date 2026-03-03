@@ -12,8 +12,10 @@ def get_sentence_model():
     """Get or initialize the sentence transformer model."""
     global _sentence_model
     if _sentence_model is None:
+        import torch
         from sentence_transformers import SentenceTransformer
-        _sentence_model = SentenceTransformer(_model_name)
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        _sentence_model = SentenceTransformer(_model_name, device=device)
     return _sentence_model
 
 

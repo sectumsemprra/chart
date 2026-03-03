@@ -257,14 +257,12 @@ class HCPCv2Computer:
     ) -> Tuple[float, float, float]:
         reasonings = [p.get("reasoning", "") for p in parsed]
  
-        # Semantic: 1 - avg pairwise similarity (cap at 8 pairs for speed)
-        pairs = [(reasonings[i], reasonings[j])
-                 for i in range(len(reasonings))
-                 for j in range(i + 1, len(reasonings))
-                 if weights[i] * weights[j] > 1e-10
-                 and reasonings[i] and reasonings[j]]
-        if len(pairs) >= 2:
-            avg_sim, _ = compute_pairwise_similarity([p[0] for p in pairs[:8]])
+        # Semantic: 1 - avg pairwise similarity over active rollouts
+        # Collect reasoning texts from rollouts with non-zero weight
+        active = [r for r, w in zip(reasonings, weights)
+                  if w > 1e-10 and r and r.strip()]
+        if len(active) >= 2:
+            avg_sim, _ = compute_pairwise_similarity(active[:8])
             d_semantic = max(0.0, 1.0 - avg_sim)
         else:
             d_semantic = 0.0
