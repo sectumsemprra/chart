@@ -64,9 +64,12 @@ class DAPOTrainer(BaseTrainer, PolicyMethodMixin):
         dapo_extra = {
             "epsilon":      getattr(self.config, "dapo_epsilon_low", 0.2),
             "epsilon_high": getattr(self.config, "dapo_epsilon_high", 0.28),
-            # token-level loss normalisation (TRL >= 0.15)
-            "loss_type":    "token",
         }
+        # token-level loss normalisation (TRL >= 0.15) — only if supported
+        _loss_type_param = inspect.signature(GRPOConfig).parameters.get("loss_type")
+        _valid_loss_types = getattr(_loss_type_param.annotation, "__args__", ()) if _loss_type_param else ()
+        if "token" in _valid_loss_types:
+            dapo_extra["loss_type"] = "token"
         config_kwargs.update(dapo_extra)
  
         if "report_to" in allowed:
