@@ -29,6 +29,8 @@ Usage:
 """
 
 import argparse
+import base64
+import io
 import json
 import re
 import sys
@@ -81,6 +83,13 @@ def _get_first(example, keys):
     return None
 
 
+def _image_to_b64(pil_image: Image.Image) -> str:
+    """Encode a PIL image to base64 JPEG string for JSONL storage."""
+    buf = io.BytesIO()
+    pil_image.save(buf, format="JPEG", quality=85)
+    return base64.b64encode(buf.getvalue()).decode()
+
+
 def _parse_answer(completion: str) -> str:
     m = _ANSWER_RE.search(completion)
     return m.group(1).strip() if m else ""
@@ -131,6 +140,7 @@ def main():
             continue
 
         try:
+            image_orig = image  # keep original PIL before any processing
             image = process_image_for_model(image)
             messages = format_conversation(question)
             text = processor.apply_chat_template(
@@ -180,8 +190,7 @@ def main():
             total_consistent += 1
 
             kept.append({
-                "dataset_name": args.dataset,
-                "row_idx": idx,
+                "image_b64": _image_to_b64(image_orig),
                 "question": question,
                 "completion": completion,
                 "label": gt_label,

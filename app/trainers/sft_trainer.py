@@ -7,28 +7,29 @@ output format and produces grounded reasoning traces.
 
 Each JSONL record:
     {
-        "dataset_name": str,   # HF dataset to re-fetch the image from
-        "row_idx":      int,   # row index in that dataset
-        "question":     str,
-        "completion":   str,   # the full model output to supervise on
-        "label":        str,
+        "image_b64":        str,   # base64-encoded JPEG of the chart image
+        "question":         str,
+        "completion":       str,   # the full model output to supervise on
+        "label":            str,
         "consistency_score": float
     }
 """
 
+import base64
+import io
 import json
 import sys
-import os
 from pathlib import Path
 from typing import List, Dict
 
 import torch
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LinearLR
+from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from data.prompts import SYSTEM_PROMPT, format_conversation
+from data.prompts import SYSTEM_PROMPT
 from data.preprocessing import process_image_for_model
 
 
@@ -42,15 +43,10 @@ def load_rft_jsonl(path: str) -> List[Dict]:
     return records
 
 
-def _fetch_image(record: Dict, cache_dir: str):
-    """Re-load the chart image for a saved RFT record."""
-    from datasets import load_dataset
-    ds = load_dataset(record["dataset_name"], split="train", cache_dir=cache_dir)
-    example = ds[record["row_idx"]]
-    img = example.get("image") or example.get("image_path")
-    if img is None:
-        return None
-    return process_image_for_model(img)
+def _decode_image(record: Dict):
+    """Decode base64 image stored in JSONL record."""
+    img_bytes = base64.b64decode(record["image_b64"])
+    return Image.open(io.BytesIO(img_bytes)).convert("RGB")
 
 
 class RFTSFTTrainer:
@@ -73,17 +69,24 @@ class RFTSFTTrainer:
         self.processor = processor
         self.records = load_rft_jsonl(rft_path)
         self.config = config
-        self.cache_dir = getattr(config, "cache_dir", "./cache")
         self.lr = 2e-5
-        self.max_new_tokens = getattr(config, "max_completion_length", 768)
         self.image_min_pixels = getattr(config, "image_min_pixels", 4 * 28 * 28)
         self.image_max_pixels = getattr(config, "image_max_pixels", 320 * 28 * 28)
-        self.image_resample = getattr(config, "image_resample", "bicubic")
+        self.image_resample = getattr(config, "image_resample", "lanczos")
 
     # ------------------------------------------------------------------
     def _build_inputs(self, record: Dict):
         """Build tokenised inputs for one SFT example."""
-        image = _fetch_image(record, self.cache_dir)
+        try:
+            image = _decode_image(record)
+        except Exception:
+            return None
+        image = process_image_for_model(
+            image,
+            min_pixels=self.image_min_pixels,
+            max_pixels=self.image_max_pixels,
+            resample=self.image_resample,
+        )
         if image is None:
             return None
 
@@ -149,8 +152,10 @@ class RFTSFTTrainer:
 
             inputs = {k: v.to(device) for k, v in inputs.items()}
             labels = inputs["input_ids"].clone()
-            # Ignore padding tokens in the loss
-            labels[labels == self.processor.tokenizer.pad_token_id] = -100
+            # Ignore padding tokens in the loss (guard: pad_token_id can be None)
+            pad_id = self.processor.tokenizer.pad_token_id
+            if pad_id is not None:
+                labels[labels == pad_id] = -100
 
             try:
                 outputs = self.model(**inputs, labels=labels)
