@@ -11,6 +11,7 @@ from .base_rewards import compute_base_rewards
 from .hcpc_reward import HCPCComputer, HCPCResult
 from .hcpc_v2_reward import HCPCv2Computer, HCPCv2Result
 from .clc_reward import CLCComputer, CLCResult
+from .consistency_reward import consistency_reward_batch
 
 
 @dataclass
@@ -20,6 +21,7 @@ class AggregatedReward:
     base: float
     hcpc: float
     clc: float
+    consistency: float
     breakdown: Dict[str, float]
 
 
@@ -39,6 +41,7 @@ class RewardAggregator:
         use_hcpc: bool = True,
         use_hcpc_v2: bool = False,
         use_clc: bool = True,
+        use_consistency_reward: bool = False,
         # HCPC / HCPC-v2 weights (shared)
         w_type: float = 1.0,
         w_table: float = 2.0,
@@ -47,6 +50,8 @@ class RewardAggregator:
         hcpc_v2_semantic_weight: float = 0.5,
         # CLC weight
         w_clc: float = 1.0,
+        # Consistency weight
+        w_consistency: float = 0.3,
         # Base reward flags
         use_format_reward: bool = True,
         use_accuracy_reward: bool = True,
@@ -59,7 +64,9 @@ class RewardAggregator:
         self.use_hcpc = use_hcpc
         self.use_hcpc_v2 = use_hcpc_v2
         self.use_clc = use_clc
- 
+        self.use_consistency_reward = use_consistency_reward
+        self.w_consistency = w_consistency
+
         self.use_format_reward = use_format_reward
         self.use_accuracy_reward = use_accuracy_reward
         self.use_length_reward = use_length_reward
@@ -130,16 +137,23 @@ class RewardAggregator:
             # Create dummy results with 0 reward
             clc_results = [CLCResult(0, 0, set(), set(), set(), {}) for _ in rollouts]
 
+        # Compute consistency reward for each rollout
+        consistency_scores = [0.0] * len(rollouts)
+        if self.use_consistency_reward:
+            consistency_scores = consistency_reward_batch(rollouts)
+
         # Aggregate
         for i, (base, clc) in enumerate(zip(base_rewards, clc_results)):
             hcpc_i = hcpc_per_rollout[i]
-            total = base["total"] + hcpc_i + clc.reward
+            cons_i = consistency_scores[i] * self.w_consistency
+            total = base["total"] + hcpc_i + clc.reward + cons_i
 
             breakdown = {
                 **{f"base_{k}": v for k, v in base.items()},
                 "hcpc": hcpc_i,
                 "clc": clc.reward,
                 "clc_coherence": clc.coherence,
+                "consistency": cons_i,
             }
 
             if hcpc_result:
@@ -162,6 +176,7 @@ class RewardAggregator:
                 base=base["total"],
                 hcpc=hcpc_i,
                 clc=clc.reward,
+                consistency=cons_i,
                 breakdown=breakdown,
             ))
 
@@ -207,12 +222,14 @@ class RewardAggregator:
             use_hcpc=config.rewards.use_hcpc,
             use_hcpc_v2=config.rewards.use_hcpc_v2,
             use_clc=config.rewards.use_clc,
+            use_consistency_reward=config.rewards.use_consistency_reward,
             w_type=config.rewards.w_type,
             w_table=config.rewards.w_table,
             w_reason=config.rewards.w_reason,
             table_sim_threshold=config.rewards.table_sim_threshold,
             hcpc_v2_semantic_weight=config.rewards.hcpc_v2_semantic_weight,
             w_clc=config.rewards.w_clc,
+            w_consistency=config.rewards.w_consistency,
             # Base reward flags
             use_format_reward=config.rewards.use_format_reward,
             use_accuracy_reward=config.rewards.use_accuracy_reward,

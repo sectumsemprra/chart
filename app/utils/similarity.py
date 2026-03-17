@@ -1,5 +1,6 @@
 """Similarity computation utilities using sentence embeddings."""
 
+import math
 from typing import List, Optional, Tuple
 import numpy as np
 
@@ -17,6 +18,36 @@ def get_sentence_model():
         device = "cuda" if torch.cuda.is_available() else "cpu"
         _sentence_model = SentenceTransformer(_model_name, device=device)
     return _sentence_model
+
+
+# ---------------------------------------------------------------------------
+# Strategy archetype anchors — one sentence per strategy type.
+# Chosen to be semantically far apart so soft cosine assignments are sharp.
+# ---------------------------------------------------------------------------
+_STRATEGY_ARCHETYPES: List[str] = [
+    "The chart directly shows the value without any calculation.",           # direct_read
+    "Comparing two categories to determine which one is higher or lower.",   # comparison
+    "Computing the sum, difference, percentage, or ratio of two values.",    # arithmetic
+    "Estimating the approximate value by visual inspection of the chart.",   # estimation
+    "Identifying a rising or falling trend in the data over time.",          # trend
+]
+
+# Cached normalized archetype embeddings — shape (5, D), computed once on first use
+_archetype_embeddings_cache: Optional[np.ndarray] = None
+
+
+def _get_archetype_embeddings() -> np.ndarray:
+    """Return (5, D) L2-normalized archetype embeddings, computed once."""
+    global _archetype_embeddings_cache
+    if _archetype_embeddings_cache is None:
+        model = get_sentence_model()
+        _archetype_embeddings_cache = model.encode(
+            _STRATEGY_ARCHETYPES,
+            convert_to_numpy=True,
+            normalize_embeddings=True,
+            show_progress_bar=False,
+        )
+    return _archetype_embeddings_cache
 
 
 def compute_similarity(text1: str, text2: str) -> float:
@@ -210,3 +241,69 @@ def batch_encode(texts: List[str]) -> np.ndarray:
     """
     model = get_sentence_model()
     return model.encode(texts, convert_to_numpy=True, show_progress_bar=False)
+
+
+def compute_embedding_strategy_diversity(
+    reasonings: List[str],
+    weights: List[float],
+    temperature: float = 3.0,
+) -> float:
+    """
+    Embedding-based strategy diversity in [0, 1].
+
+    Each reasoning is soft-assigned to 5 strategy archetypes via cosine
+    similarity + softmax.  The weighted aggregate over all rollouts gives a
+    probability distribution over archetypes.  Normalised entropy of that
+    distribution is the diversity score.
+
+    High  → rollouts spread across different strategy archetypes.
+    Low   → rollouts all cluster near the same archetype.
+
+    Args:
+        reasonings:  One reasoning string per rollout.
+        weights:     Soft weights aligned with reasonings (same length).
+        temperature: Softmax sharpness — higher = harder archetype assignment.
+
+    Returns:
+        Diversity score in [0, 1].
+    """
+    active_pairs = [
+        (r, w) for r, w in zip(reasonings, weights)
+        if r and r.strip() and w > 1e-10
+    ]
+    if len(active_pairs) < 2:
+        return 0.0
+
+    texts = [r for r, w in active_pairs]
+    wts = np.array([w for r, w in active_pairs], dtype=np.float64)
+    wts /= wts.sum()  # normalise so they sum to 1
+
+    model = get_sentence_model()
+    archetype_embs = _get_archetype_embeddings()  # (5, D) normalised
+
+    # Encode reasoning texts → (N, D) normalised
+    embs = model.encode(
+        texts,
+        convert_to_numpy=True,
+        normalize_embeddings=True,
+        show_progress_bar=False,
+    )
+
+    # Cosine similarity to each archetype: (N, 5)
+    sims = embs @ archetype_embs.T
+
+    # Softmax with temperature → soft archetype assignments (N, 5)
+    scaled = sims * temperature
+    scaled -= scaled.max(axis=1, keepdims=True)   # numerical stability
+    exp_scaled = np.exp(scaled)
+    soft_assign = exp_scaled / exp_scaled.sum(axis=1, keepdims=True)
+
+    # Weighted aggregate distribution over archetypes: (5,)
+    agg = (soft_assign * wts[:, None]).sum(axis=0)  # sums to 1
+
+    # Normalised entropy
+    n_buckets = len(_STRATEGY_ARCHETYPES)
+    entropy = -float(np.sum(agg * np.log(agg + 1e-12)))
+    max_entropy = math.log(n_buckets)
+
+    return min(entropy / max_entropy, 1.0)

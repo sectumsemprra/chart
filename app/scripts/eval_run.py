@@ -78,7 +78,7 @@ def parse_args():
     # Generation
     p.add_argument("--num-samples", "-n", type=int, default=8,
                    help="Rollouts per question (for Pass@k / diversity)")
-    p.add_argument("--temperature", type=float, default=0.8)
+    p.add_argument("--temperature", type=float, default=1.0)
     p.add_argument("--top-p", type=float, default=0.95)
     p.add_argument("--max-new-tokens", type=int, default=768)
 

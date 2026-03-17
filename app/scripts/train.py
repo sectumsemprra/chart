@@ -38,8 +38,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from configs import get_experiment_config, list_experiments, EXPERIMENTS
 from data import load_training_dataset
+from data.dataset import load_mixed_dataset
 from models import load_model_for_training
 from trainers import get_trainer
+from trainers.sft_trainer import RFTSFTTrainer
 from utils.logging_utils import setup_logging, log_config
 from utils.checkpointing import CheckpointManager
 import random
@@ -112,6 +114,16 @@ def parse_args():
         type=int,
         default=None,
         help="Override number of rollouts per sample",
+    )
+
+    # RFT warmup
+    parser.add_argument(
+        "--rft-warmup",
+        type=str,
+        default=None,
+        metavar="RFT_JSONL",
+        help="Path to RFT JSONL (from generate_rft_data.py). "
+             "Runs SFT on these traces before DAPO training starts.",
     )
 
     # Reward options
@@ -291,9 +303,36 @@ def main():
     logger.info("Loading model...")
     model, processor = load_model_for_training(config)
 
-    # Load dataset
+    # ── Optional RFT SFT warmup ──────────────────────────────────────────
+    if args.rft_warmup:
+        from pathlib import Path as _Path
+        rft_path = str(_Path(args.rft_warmup).resolve())
+        logger.info(f"Running RFT SFT warmup from: {rft_path}")
+
+        sft_trainer = RFTSFTTrainer(
+            model=model,
+            processor=processor,
+            rft_path=rft_path,
+            config=config,
+        )
+        sft_trainer.train()
+
+        # Save SFT checkpoint then continue with same model into DAPO
+        sft_ckpt_dir = str(_Path(config.output_dir) / config.experiment_name / "sft_warmup")
+        sft_trainer.save(sft_ckpt_dir)
+        logger.info(f"SFT warmup complete. Checkpoint: {sft_ckpt_dir}")
+
+    # ── Load dataset ─────────────────────────────────────────────────────
     logger.info("Loading dataset...")
-    train_dataset = load_training_dataset(config, processor)
+    if getattr(config, "aux_dataset_name", None):
+        train_dataset = load_mixed_dataset(config, processor)
+        logger.info(
+            f"Mixed dataset: {config.dataset_name} (75%) + "
+            f"{config.aux_dataset_name} (25%)"
+        )
+    else:
+        train_dataset = load_training_dataset(config, processor)
+
     if config.use_python_list_dataset and not isinstance(train_dataset, list):
         train_dataset = [train_dataset[i] for i in range(len(train_dataset))]
     logger.info(f"Loaded {len(train_dataset)} training samples")

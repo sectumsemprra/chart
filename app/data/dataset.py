@@ -4,7 +4,7 @@ from typing import Optional, Dict, List, Any, Callable
 from pathlib import Path
 import json
 
-from datasets import load_dataset, Dataset, DatasetDict, load_from_disk
+from datasets import load_dataset, Dataset, DatasetDict, load_from_disk, concatenate_datasets
 from torch.utils.data import DataLoader
 from PIL import Image
 
@@ -160,6 +160,7 @@ def load_training_dataset(
     )
 
     if config.subset_size:
+        dataset = dataset.shuffle(seed=config.seed)
         dataset = dataset.select(range(min(config.subset_size, len(dataset))))
 
     def format_example(example):
@@ -252,6 +253,101 @@ def load_eval_dataset(
     return dataset
 
 
+def load_mixed_dataset(config, processor=None):
+    """
+    Load and mix primary + auxiliary datasets for training.
+
+    Primary dataset (e.g. chart-rvr-grpo-train) provides full reward signal —
+    it has table and chart_type fields.  The auxiliary dataset (e.g. EvoChart)
+    adds visual diversity; missing table/chart_type fields degrade gracefully
+    to empty values, so only the answer reward fires for those examples.
+
+    Args:
+        config: TrainingConfig with aux_dataset_name and aux_dataset_ratio set.
+        processor: Optional model processor.
+
+    Returns:
+        Shuffled list of formatted examples.
+    """
+    # Load primary
+    primary = load_dataset(
+        config.dataset_name,
+        split="train",
+        cache_dir=config.cache_dir,
+    )
+    primary = primary.shuffle(seed=config.seed)
+
+    # No aux — fall back to standard loader
+    if not getattr(config, "aux_dataset_name", None):
+        return load_training_dataset(config, processor)
+
+    # Load aux
+    aux = load_dataset(
+        config.aux_dataset_name,
+        split="train",
+        cache_dir=config.cache_dir,
+    )
+    aux = aux.shuffle(seed=config.seed)
+
+    # Compute split sizes
+    total = config.subset_size or (len(primary) + len(aux))
+    ratio = getattr(config, "aux_dataset_ratio", 0.25)
+    n_aux = int(total * ratio)
+    n_primary = total - n_aux
+
+    primary = primary.select(range(min(n_primary, len(primary))))
+    aux = aux.select(range(min(n_aux, len(aux))))
+
+    mixed = concatenate_datasets([primary, aux]).shuffle(seed=config.seed)
+
+    # Reuse format_example logic inline — handles missing fields for aux data
+    def _format(example):
+        question_text = _normalize_text(
+            _get_first(example, ["query", "question", "Question", "prompt", "input"])
+        )
+        prompt = format_conversation(question_text)
+
+        image = example.get("image") or example.get("image_path")
+        if image is not None:
+            image = process_image_for_model(
+                image,
+                min_pixels=config.image_min_pixels,
+                max_pixels=config.image_max_pixels,
+                resample=config.image_resample,
+            )
+
+        return {
+            "prompt": prompt,
+            "images": [image] if image is not None else [],
+            "label": _normalize_label(
+                _get_first(example, ["label", "answer", "Answer", "answers", "output"])
+            ),
+            "labels": [_normalize_label(
+                _get_first(example, ["label", "answer", "Answer", "answers", "output"])
+            )],
+            "table": _normalize_table(
+                _get_first(example, ["table", "tables", "chart_table", "data_table"])
+            ),
+            "tables": [_normalize_table(
+                _get_first(example, ["table", "tables", "chart_table", "data_table"])
+            )],
+            "chart_type": _normalize_text(
+                _get_first(example, ["chart_type", "chart", "type"])
+            ),
+            "chart_types": [_normalize_text(
+                _get_first(example, ["chart_type", "chart", "type"])
+            )],
+            "reasoning": _normalize_text(
+                _get_first(example, ["reasoning", "rationale", "explanation", "Explanation"])
+            ),
+            "reasonings": [_normalize_text(
+                _get_first(example, ["reasoning", "rationale", "explanation", "Explanation"])
+            )],
+        }
+
+    return [_format(ex) for ex in mixed]
+
+
 def create_grpo_collator(processor):
     """
     Create a collate function for GRPO training.
@@ -312,8 +408,3 @@ def create_dataloader(
         num_workers=num_workers,
         collate_fn=collate_fn,
     )
-def _get_first(example: Dict[str, Any], keys: List[str]):
-    for k in keys:
-        if k in example:
-            return example.get(k)
-    return None

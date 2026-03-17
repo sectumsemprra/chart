@@ -5,6 +5,91 @@ import json
 from typing import Dict, List, Optional, Any, Set
 
 
+# ---------------------------------------------------------------------------
+# Lookup tables used by normalize_answer
+# ---------------------------------------------------------------------------
+
+# Boolean / null equivalences → canonical digit string
+_BOOL_MAP: Dict[str, str] = {
+    "false": "0", "no": "0", "none": "0",
+    "n/a": "0", "na": "0", "null": "0",
+    "not available": "0", "not applicable": "0",
+    "true": "1", "yes": "1",
+}
+
+# English number words → digit string (0-19 + tens)
+_NUM_WORDS: Dict[str, str] = {
+    "zero": "0", "one": "1", "two": "2", "three": "3", "four": "4",
+    "five": "5", "six": "6", "seven": "7", "eight": "8", "nine": "9",
+    "ten": "10", "eleven": "11", "twelve": "12", "thirteen": "13",
+    "fourteen": "14", "fifteen": "15", "sixteen": "16", "seventeen": "17",
+    "eighteen": "18", "nineteen": "19", "twenty": "20", "thirty": "30",
+    "forty": "40", "fifty": "50", "sixty": "60", "seventy": "70",
+    "eighty": "80", "ninety": "90",
+}
+
+# Ordinal words → cardinal digit string
+_ORDINAL_WORDS: Dict[str, str] = {
+    "first": "1", "second": "2", "third": "3", "fourth": "4", "fifth": "5",
+    "sixth": "6", "seventh": "7", "eighth": "8", "ninth": "9", "tenth": "10",
+    "eleventh": "11", "twelfth": "12",
+}
+
+# Month abbreviations → full name
+_MONTH_MAP: Dict[str, str] = {
+    "jan": "january", "feb": "february", "mar": "march", "apr": "april",
+    "jun": "june", "jul": "july", "aug": "august",
+    "sep": "september", "sept": "september",
+    "oct": "october", "nov": "november", "dec": "december",
+}
+
+# Ordinal suffix pattern: "1st", "2nd", "3rd", "4th", ...
+_ORDINAL_SUFFIX_RE = re.compile(r"^(-?\d+)(?:st|nd|rd|th)$")
+
+# Compound number word pattern: "twenty one", "forty five", etc.
+_COMPOUND_NUM_RE = re.compile(
+    r"^(twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)"
+    r"[\s-]"
+    r"(one|two|three|four|five|six|seven|eight|nine)$"
+)
+_COMPOUND_TENS: Dict[str, int] = {
+    "twenty": 20, "thirty": 30, "forty": 40, "fifty": 50,
+    "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90,
+}
+_COMPOUND_ONES: Dict[str, int] = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+    "six": 6, "seven": 7, "eight": 8, "nine": 9,
+}
+
+# Trailing count-noun pattern after a number: "5 bars", "3 items", etc.
+_TRAILING_COUNT_NOUN_RE = re.compile(
+    r"^(-?\d+(?:\.\d+)?)"
+    r"\s+"
+    r"(?:bars?|lines?|items?|points?|segments?|slices?|"
+    r"data\s+points?|categories|entries|values?|columns?|rows?)$"
+)
+
+# Negative word pattern: "negative 5" → "-5"
+_NEGATIVE_WORD_RE = re.compile(r"^negative\s+(\d+(?:\.\d+)?)$")
+
+# Chart-specific lead-in phrases to strip (extended)
+_LEADIN_RE = re.compile(
+    r"^(?:"
+    r"the\s+answer\s+is"
+    r"|answer\s+is"
+    r"|it\s+is"
+    r"|it's"
+    r"|approximately"
+    r"|about"
+    r"|the\s+\w+\s+(?:color|colour|label|value|name|bar|line|segment|category|slice)\s+is"
+    r"|the\s+(?:color|colour|label|value|name|bar|line|segment|category)\s+is"
+    r"|the\s+(?:highest|lowest|largest|smallest|maximum|minimum|greatest|least)\s+(?:value\s+)?is"
+    r"|the\s+(?:correct\s+)?answer\s+(?:would\s+be|would\s+be\s+approximately)"
+    r")\s+",
+    re.IGNORECASE,
+)
+
+
 def parse_response(text: str) -> Dict[str, Any]:
     """
     Parse model output into structured components.
@@ -221,6 +306,16 @@ def normalize_answer(answer: str) -> str:
     """
     Normalize answer string for comparison.
 
+    Handles:
+    - Lead-in phrase stripping (generic + chart-specific)
+    - Boolean / null equivalences (false/no → "0", true/yes → "1")
+    - Negative word form ("negative 5" → "-5")
+    - Ordinal suffixes ("2nd" → "2") and ordinal words ("second" → "2")
+    - Number words ("three" → "3", "twenty one" → "21")
+    - Month abbreviations ("jan" → "january")
+    - Trailing count nouns ("5 bars" → "5")
+    - British/American spelling, currency symbols, commas, punctuation
+
     Args:
         answer: Raw answer string
 
@@ -233,26 +328,69 @@ def normalize_answer(answer: str) -> str:
     # Strip and lowercase
     normalized = answer.strip().lower()
 
-    # Drop common lead-in phrases
-    normalized = re.sub(
-        r"^(the\s+answer\s+is|answer\s+is|it\s+is|it's|approximately|about)\s+",
-        "",
-        normalized,
-    )
+    # Strip chart-specific and generic lead-in phrases (iterative — handles nested)
+    prev = None
+    while prev != normalized:
+        prev = normalized
+        normalized = _LEADIN_RE.sub("", normalized).strip()
 
     # Normalize british/american spelling variants
     normalized = normalized.replace("grey", "gray")
+    normalized = normalized.replace("colour", "color")
 
     # Remove currency words/symbols and commas
     normalized = normalized.replace(",", "")
-    normalized = re.sub(r"\b(usd|dollar|dollars)\b", "", normalized)
-    normalized = normalized.replace("$", "").strip()
+    normalized = re.sub(r"\b(usd|dollar|dollars|eur|euro|euros|gbp|pound|pounds)\b", "", normalized)
+    normalized = re.sub(r"[$£€]", "", normalized).strip()
 
     # Remove trailing punctuation
     normalized = re.sub(r"[.,;:!?]+$", "", normalized)
 
     # Normalize whitespace
     normalized = " ".join(normalized.split())
+
+    if not normalized:
+        return ""
+
+    # --- Semantic equivalences (applied to the full string only for safety) ---
+
+    # Negative word form: "negative 5" → "-5"
+    neg_m = _NEGATIVE_WORD_RE.match(normalized)
+    if neg_m:
+        normalized = "-" + neg_m.group(1)
+
+    # Ordinal suffix: "1st" → "1", "2nd" → "2", etc.
+    ord_m = _ORDINAL_SUFFIX_RE.match(normalized)
+    if ord_m:
+        normalized = ord_m.group(1)
+
+    # Boolean / null equivalences
+    if normalized in _BOOL_MAP:
+        normalized = _BOOL_MAP[normalized]
+
+    # Ordinal words: "second" → "2"
+    if normalized in _ORDINAL_WORDS:
+        normalized = _ORDINAL_WORDS[normalized]
+
+    # Compound number words: "twenty one" → "21", "forty-five" → "45"
+    comp_m = _COMPOUND_NUM_RE.match(normalized)
+    if comp_m:
+        tens = _COMPOUND_TENS[comp_m.group(1)]
+        ones = _COMPOUND_ONES[comp_m.group(2)]
+        normalized = str(tens + ones)
+
+    # Single number words: "three" → "3"
+    if normalized in _NUM_WORDS:
+        normalized = _NUM_WORDS[normalized]
+
+    # Month abbreviations: "jan" → "january"
+    if normalized in _MONTH_MAP:
+        normalized = _MONTH_MAP[normalized]
+
+    # Trailing count nouns after a number: "5 bars" → "5"
+    count_m = _TRAILING_COUNT_NOUN_RE.match(normalized)
+    if count_m:
+        normalized = count_m.group(1)
 
     return normalized
 
@@ -261,11 +399,18 @@ def _parse_numeric_with_units(text: str) -> Optional[float]:
     """
     Parse a numeric value with optional magnitude suffixes/words.
 
-    Examples:
-        "42 million" -> 42000000
-        "$42m" -> 42000000
-        "3.5 billion" -> 3500000000
-        "12%" -> 0.12
+    Magnitude treatment:
+      - "hundred" is expanded: "2 hundred" → 200.0
+      - k/m/b/t/thousand/million/billion/trillion are treated cosmetically
+        (stripped) so that "1.5 million" and "1.5" both parse to 1.5 and
+        compare equal within the training reward tolerance.
+      - "%" returns the raw number (50% → 50.0, consistent with label format).
+
+    Args:
+        text: String potentially containing a number with units
+
+    Returns:
+        Float value or None if no numeric content found
     """
     if not text:
         return None
@@ -276,6 +421,16 @@ def _parse_numeric_with_units(text: str) -> Optional[float]:
 
     # Handle percent word
     cleaned = cleaned.replace("percent", "%")
+
+    # Handle "hundred" before the main regex so "2 hundred" → 200
+    hundred_match = re.search(
+        r"(-?\d+(?:\.\d+)?)\s+hundred\b", cleaned
+    )
+    if hundred_match:
+        # Check nothing else follows (avoid "2 hundred thousand" → just 200)
+        tail = cleaned[hundred_match.end():].strip()
+        if not tail or tail.startswith("%"):
+            return float(hundred_match.group(1)) * 100
 
     pattern = re.compile(
         r"(-?\d+(?:\.\d+)?)\s*(%|k|m|b|t|thousand|million|billion|trillion)?"
@@ -291,8 +446,8 @@ def _parse_numeric_with_units(text: str) -> Optional[float]:
     if suffix == "%":
         return number
 
-    # Treat magnitude suffixes/words as cosmetic by default
-    # (e.g., "1.5 billion" -> 1.5)
+    # Treat large magnitude suffixes as cosmetic
+    # (labels and predictions usually use the same format)
     if suffix in {"k", "m", "b", "t", "thousand", "million", "billion", "trillion"}:
         return number
 

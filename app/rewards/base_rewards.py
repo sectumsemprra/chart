@@ -183,39 +183,40 @@ def _parse_table_from_completion(completion: str) -> Optional[Dict[str, Any]]:
 
 
 def _compare_tables(pred: Dict[str, Any], gt: Dict[str, Any]) -> float:
+    # Work on copies so the original ground-truth dict is never mutated
     try:
-        gt["columns"] = sorted(gt["columns"], key=lambda x: str(x).lower())
-        pred["columns"] = sorted(pred["columns"], key=lambda x: str(x).lower())
+        gt_cols = sorted(gt.get("columns", []), key=lambda x: str(x).lower())
+        pred_cols = sorted(pred.get("columns", []), key=lambda x: str(x).lower())
     except Exception:
-        pass
+        gt_cols = list(gt.get("columns", []))
+        pred_cols = list(pred.get("columns", []))
 
     try:
-        if all(isinstance(row, list) for row in gt.get("rows", [])):
-            gt["rows"] = sorted([g for g in gt["rows"]])
-        if all(isinstance(row, list) for row in pred.get("rows", [])):
-            pred["rows"] = sorted([g for g in pred["rows"]])
+        gt_rows = sorted(gt.get("rows", [])) if all(isinstance(r, list) for r in gt.get("rows", [])) else list(gt.get("rows", []))
+        pred_rows = sorted(pred.get("rows", [])) if all(isinstance(r, list) for r in pred.get("rows", [])) else list(pred.get("rows", []))
     except Exception:
-        pass
+        gt_rows = list(gt.get("rows", []))
+        pred_rows = list(pred.get("rows", []))
 
     reward = 0.0
     try:
-        min_cols = min(len(pred.get("columns", [])), len(gt.get("columns", [])))
+        min_cols = min(len(pred_cols), len(gt_cols))
         for col in range(min_cols):
-            if str(pred["columns"][col]).lower() == str(gt["columns"][col]).lower():
-                reward += 0.5 * float(1 / len(pred["columns"]))
+            if str(pred_cols[col]).lower() == str(gt_cols[col]).lower():
+                reward += 0.5 * float(1 / len(pred_cols))
     except Exception:
         pass
 
     try:
-        if all(isinstance(row, list) for row in pred.get("rows", [])) and all(
-            isinstance(row, list) for row in gt.get("rows", [])
+        if all(isinstance(row, list) for row in pred_rows) and all(
+            isinstance(row, list) for row in gt_rows
         ):
-            min_rows = min(len(pred["rows"]), len(gt["rows"]))
+            min_rows = min(len(pred_rows), len(gt_rows))
             for row in range(min_rows):
-                min_cols_in_row = min(len(pred["rows"][row]), len(gt["rows"][row]))
+                min_cols_in_row = min(len(pred_rows[row]), len(gt_rows[row]))
                 for row_id in range(min_cols_in_row):
-                    if pred["rows"][row][row_id] == gt["rows"][row][row_id]:
-                        reward += 0.5 * float(1.0 / len(pred["rows"]))
+                    if pred_rows[row][row_id] == gt_rows[row][row_id]:
+                        reward += 0.5 * float(1.0 / len(pred_rows))
     except Exception:
         pass
 

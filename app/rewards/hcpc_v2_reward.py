@@ -25,77 +25,13 @@ import math
 from typing import List, Dict, Any, Tuple
 from dataclasses import dataclass
 from collections import Counter
- 
+
 from utils.parsing import parse_response, normalize_answer, try_parse_numeric
-from utils.similarity import compute_pairwise_similarity, compute_table_similarity
- 
- 
-# ---------------------------------------------------------------------------
-# Strategy keyword classifier
-# ---------------------------------------------------------------------------
- 
-_STRATEGY_KEYWORDS: Dict[str, List[str]] = {
-    "direct_read": [
-        "shows", "displays", "indicates", "according to", "from the chart",
-        "the value is", "is shown", "directly", "reads",
-    ],
-    "comparison": [
-        "compare", "greater", "less", "more than", "fewer", "highest", "lowest",
-        "larger", "smaller", "maximum", "minimum", "most", "least", "between",
-        "difference", "versus", "vs",
-    ],
-    "arithmetic": [
-        "sum", "total", "add", "plus", "subtract", "minus", "multiply",
-        "divide", "calculate", "compute", "average", "mean", "percent",
-        " + ", " - ", " × ", " / ", " = ",
-    ],
-    "estimation": [
-        "approximately", "about", "roughly", "around", "estimate", "nearly",
-        "close to", "~",
-    ],
-    "trend": [
-        "increase", "decrease", "grow", "decline", "trend", "over time",
-        "rise", "fall", "pattern", "consistent", "steady",
-    ],
-}
- 
- 
-def _classify_strategies(text: str) -> List[str]:
-    """Return all strategy types present in a reasoning text."""
-    if not text:
-        return ["direct_read"]
-    tl = text.lower()
-    found = [s for s, kws in _STRATEGY_KEYWORDS.items() if any(k in tl for k in kws)]
-    return found if found else ["direct_read"]
- 
- 
-def _strategy_diversity(reasonings: List[str], weights: List[float]) -> float:
-    """
-    Weighted strategy-type diversity in [0, 1].
- 
-    High when rollouts use different strategy types.
-    """
-    if not reasonings:
-        return 0.0
-    total_w = sum(weights)
-    if total_w < 1e-8:
-        return 0.0
- 
-    strategy_w: Dict[str, float] = Counter()
-    for reasoning, w in zip(reasonings, weights):
-        strategies = _classify_strategies(reasoning)
-        share = w / max(len(strategies), 1)
-        for s in strategies:
-            strategy_w[s] += share
- 
-    total = sum(strategy_w.values())
-    if total < 1e-8:
-        return 0.0
- 
-    n_buckets = len(_STRATEGY_KEYWORDS)
-    entropy = -sum((c / total) * math.log(c / total + 1e-12) for c in strategy_w.values())
-    max_entropy = math.log(n_buckets + 1e-12)
-    return min(entropy / max_entropy, 1.0)
+from utils.similarity import (
+    compute_pairwise_similarity,
+    compute_table_similarity,
+    compute_embedding_strategy_diversity,
+)
  
  
 # ---------------------------------------------------------------------------
@@ -218,7 +154,17 @@ class HCPCv2Computer:
         ln_ = normalize_answer(label)
         if not pn_ or not ln_:
             return False
-        return pn_ == ln_ or pn_ in ln_ or ln_ in pn_
+        if pn_ == ln_:
+            return True
+        # Word-boundary substring check — avoids "red" matching "tired"
+        import re as _re
+        pattern = r"(?<!\w)" + _re.escape(pn_) + r"(?!\w)"
+        if _re.search(pattern, ln_):
+            return True
+        pattern = r"(?<!\w)" + _re.escape(ln_) + r"(?!\w)"
+        if _re.search(pattern, pn_):
+            return True
+        return False
  
     # ------------------------------------------------------------------
     # Metrics
@@ -234,7 +180,8 @@ class HCPCv2Computer:
             if t:
                 type_w[t] += w
         if not type_w:
-            return 1.0
+            # No rollout produced a <type> tag — no consistency signal
+            return 0.0
         return type_w.most_common(1)[0][1] / total_w
  
     def _table_consistency(self, parsed: List[Dict], weights: List[float]) -> float:
@@ -267,7 +214,7 @@ class HCPCv2Computer:
         else:
             d_semantic = 0.0
  
-        d_strategy = _strategy_diversity(reasonings, weights)
+        d_strategy = compute_embedding_strategy_diversity(reasonings, weights)
         d_combined = self.semantic_weight * d_semantic + self.strategy_weight * d_strategy
         return d_semantic, d_strategy, d_combined
  

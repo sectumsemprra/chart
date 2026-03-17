@@ -47,6 +47,9 @@ class RewardConfig:
     # HCPC-v2 (soft filtering + strategy diversity)
     use_hcpc_v2: bool = False
     hcpc_v2_semantic_weight: float = 0.5  # blend of semantic vs strategy diversity
+    # Consistency reward: penalizes reasoning that doesn't reference extracted table values
+    use_consistency_reward: bool = False
+    w_consistency: float = 0.3
     # CLC reward settings (disabled for now)
     use_clc: bool = False
     w_clc: float = 1.0
@@ -106,6 +109,9 @@ class TrainingConfig:
     dataset_name: str = "sanchit97/chart-rvr-grpo-train"
     eval_dataset_name: str = "lmms-lab/EvoChart"
     subset_size: Optional[int] = None  # For quick iteration
+    # Data mixing for OOD generalization
+    aux_dataset_name: Optional[str] = None   # e.g. "gsarch/EvoChart-QA"
+    aux_dataset_ratio: float = 0.25          # fraction of batch from aux dataset
 
     # Precision
     bf16: bool = True

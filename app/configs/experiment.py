@@ -7,6 +7,7 @@ from typing import Dict, List
 def _make_reward_config(
     use_hcpc: bool = False,
     use_hcpc_v2: bool = False,
+    use_consistency: bool = False,
 ) -> RewardConfig:
     """Create reward config."""
     return RewardConfig(
@@ -14,10 +15,12 @@ def _make_reward_config(
         use_hcpc_v2=use_hcpc_v2,
         use_clc=False,
         use_process_reward=not (use_hcpc or use_hcpc_v2),
+        use_consistency_reward=use_consistency,
         w_type=1.0,
         w_table=2.0,
         w_reason=1.5,
         w_clc=1.0,
+        w_consistency=0.3,
         table_sim_threshold=0.6,
         hcpc_v2_semantic_weight=0.5,
     )
@@ -51,9 +54,10 @@ _SHARED = dict(
     ),
 )
  
-# DAPO uses apply_advantages_in_reward_fn=True so dynamic-sampling
-# advantage computation in DAPOTrainer.compute_advantages() fires.
-_DAPO_SHARED = {**_SHARED, "apply_advantages_in_reward_fn": True, "num_epochs": 2}
+# DAPO: keep apply_advantages_in_reward_fn=False so TRL handles whitening
+# once; DAPOTrainer.compute_advantages() is called inside reward_fn only
+# when this flag is True, which caused double-normalisation.
+_DAPO_SHARED = {**_SHARED, "apply_advantages_in_reward_fn": False, "num_epochs": 2}
  
  
 EXPERIMENTS: Dict[str, TrainingConfig] = {
@@ -120,6 +124,19 @@ EXPERIMENTS: Dict[str, TrainingConfig] = {
         policy_method="dapo",
         **_DAPO_SHARED,
         rewards=_make_reward_config(use_hcpc_v2=True),
+    ),
+
+    # Experiment 10: DAPO + HCPC-v2 + consistency reward + mixed data (OOD focus)
+    # Uses 75% chart-rvr-grpo-train + 25% EvoChart for visual diversity.
+    # Consistency reward penalises reasoning that doesn't reference extracted
+    # table values, suppressing visual-shortcut learning.
+    "dapo_hcpc_v2_mixed": TrainingConfig(
+        experiment_name="dapo_hcpc_v2_mixed",
+        policy_method="dapo",
+        **_DAPO_SHARED,
+        rewards=_make_reward_config(use_hcpc_v2=True, use_consistency=True),
+        aux_dataset_name="gsarch/EvoChart-QA",
+        aux_dataset_ratio=0.25,
     ),
 }
  
