@@ -124,9 +124,16 @@ def _nums_from_table(table_str: str) -> Set[float]:
             pass
 
     for row in obj.get("rows", []):
-        for val in row:
+        # row can be a list [v1, v2] or a bare scalar
+        if isinstance(row, (list, tuple)):
+            for val in row:
+                try:
+                    nums.add(_parse_num(str(val)))
+                except (ValueError, TypeError):
+                    pass
+        else:
             try:
-                nums.add(_parse_num(str(val)))
+                nums.add(_parse_num(str(row)))
             except (ValueError, TypeError):
                 pass
 
