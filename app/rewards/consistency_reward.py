@@ -88,16 +88,41 @@ def _nums_from_table(table_str: str) -> Set[float]:
                 pass
         return nums
 
-    nums = set()
+    nums: Set[float] = set()
 
-    # Numeric column headers (e.g. year axes)
+    if isinstance(obj, list):
+        # Table stored as a bare list (list of rows, or flat list of values)
+        def _walk(item):
+            if isinstance(item, list):
+                for x in item:
+                    _walk(x)
+            elif isinstance(item, dict):
+                for v in item.values():
+                    _walk(v)
+            else:
+                try:
+                    nums.add(_parse_num(str(item)))
+                except (ValueError, TypeError):
+                    pass
+        _walk(obj)
+        return nums
+
+    if not isinstance(obj, dict):
+        # Unexpected type — fall back to regex scan
+        for m in _NUM_RE.findall(table_str):
+            try:
+                nums.add(_parse_num(m))
+            except ValueError:
+                pass
+        return nums
+
+    # Standard {"columns": [...], "rows": [[...]]} format
     for col in obj.get("columns", []):
         try:
             nums.add(_parse_num(str(col)))
         except (ValueError, TypeError):
             pass
 
-    # Row cell values
     for row in obj.get("rows", []):
         for val in row:
             try:

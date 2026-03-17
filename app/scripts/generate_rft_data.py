@@ -73,6 +73,9 @@ def parse_args():
     p.add_argument("--cache-dir", default="./cache")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--base-model", default="Qwen/Qwen2.5-VL-3B-Instruct")
+    p.add_argument("--dtype", default="float16",
+                   choices=["float16", "bfloat16", "float32"],
+                   help="Model dtype. Use float16 on T4/P100, bfloat16 on H100/A100")
     return p.parse_args()
 
 
@@ -99,13 +102,18 @@ def main():
     args = parse_args()
 
     # ── Load model ──────────────────────────────────────────────────────────
-    print(f"Loading checkpoint: {args.checkpoint}")
+    dtype_map = {"float16": torch.float16, "bfloat16": torch.bfloat16, "float32": torch.float32}
+    torch_dtype = dtype_map[args.dtype]
+
+    print(f"Loading checkpoint: {args.checkpoint} (dtype={args.dtype})")
     model, processor = load_model_with_checkpoint(
         checkpoint_path=args.checkpoint,
         base_model_name=args.base_model,
         device_map="auto",
         cache_dir=args.cache_dir,
     )
+    # Cast to requested dtype (load_model_with_checkpoint defaults to bfloat16)
+    model = model.to(torch_dtype)
     model.eval()
     device = next(model.parameters()).device
 
@@ -124,6 +132,7 @@ def main():
     total_consistent = 0
 
     for idx in range(len(dataset)):
+        print(f"  processing {idx + 1}/{len(dataset)} ...", end="\r", flush=True)
         example = dataset[idx]
 
         question = str(
@@ -197,13 +206,13 @@ def main():
                 "consistency_score": round(score, 4),
             })
 
-        if (idx + 1) % 100 == 0:
-            pct_kept = 100 * len(kept) / max(total_rollouts, 1)
-            print(
-                f"  [{idx + 1}/{len(dataset)}] rollouts={total_rollouts} "
-                f"correct={total_correct} consistent={total_consistent} "
-                f"kept={len(kept)} ({pct_kept:.1f}%)"
-            )
+        pct_kept = 100 * len(kept) / max(total_rollouts, 1)
+        print(
+            f"  [{idx + 1}/{len(dataset)}] rollouts={total_rollouts} "
+            f"correct={total_correct} consistent={total_consistent} "
+            f"kept={len(kept)} ({pct_kept:.1f}%)",
+            flush=True,
+        )
 
     # ── Save ─────────────────────────────────────────────────────────────────
     print(f"\nDone. Kept {len(kept)} / {total_rollouts} rollouts "
