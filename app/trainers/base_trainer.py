@@ -7,6 +7,7 @@ import shutil
 
 import torch
 from trl import GRPOConfig, GRPOTrainer as TRLGRPOTrainer
+from transformers import TrainerCallback, TrainerState, TrainerControl
 import inspect
 
 from configs import TrainingConfig
@@ -15,6 +16,34 @@ from utils.checkpointing import CheckpointManager
 from utils.logging_utils import get_logger, WandBLogger, MetricsLogger
 import logging
 from collections import deque
+
+
+class _CheckpointSyncCallback(TrainerCallback):
+    """
+    Syncs TRL's built-in checkpoint saves with the custom CheckpointManager.
+
+    TRL saves to trl_output/checkpoint-N/ via its own save_steps logic.
+    This callback additionally saves the LoRA adapter to checkpoints/step_N/
+    so that CheckpointManager can enforce keep_last_n and track metrics.
+    """
+
+    def __init__(self, trainer_instance: "BaseTrainer"):
+        self.trainer_instance = trainer_instance
+
+    def on_save(
+        self,
+        args,
+        state: TrainerState,
+        control: TrainerControl,
+        **kwargs,
+    ):
+        step = state.global_step
+        try:
+            self.trainer_instance.save_checkpoint(step)
+        except Exception as e:
+            self.trainer_instance.logger.warning(
+                f"CheckpointSyncCallback: failed to save at step {step}: {e}"
+            )
 
 
 class BaseTrainer(ABC):
@@ -225,6 +254,9 @@ class BaseTrainer(ABC):
             eval_dataset=self.eval_dataset,
             reward_funcs=reward_fn,
         )
+
+        # Sync every TRL checkpoint save → custom CheckpointManager
+        self._trl_trainer.add_callback(_CheckpointSyncCallback(self))
 
     def _create_reward_function(self):
         """
@@ -506,6 +538,13 @@ class BaseTrainer(ABC):
         except KeyboardInterrupt:
             self.logger.info("Training interrupted by user")
         finally:
+            # Always save the final state so the last checkpoint is never missing
+            try:
+                final_step = self._trl_trainer.state.global_step
+                self.save_checkpoint(final_step)
+                self.logger.info(f"Saved final checkpoint at step {final_step}")
+            except Exception as e:
+                self.logger.warning(f"Final checkpoint save failed: {e}")
             self._cleanup()
 
         self.logger.info("Training complete")
